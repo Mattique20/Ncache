@@ -1,8 +1,10 @@
-﻿using System;
+﻿// Program.cs
+using System;
 using System.Collections.Generic;
-using Alachisoft.NCache.Client; // NCache Client API
+using System.Threading;
+using Alachisoft.NCache.Client;
 using Alachisoft.NCache.Runtime.Caching;
-using Alachisoft.NCache.Runtime.Exceptions; // For NCache specific exceptions
+using Alachisoft.NCache.Runtime.Exceptions;
 using NcacheDemo;
 
 namespace NCacheDemoApp
@@ -10,88 +12,124 @@ namespace NCacheDemoApp
     class Program
     {
         private static ICache _cache;
-        private const string CacheName = "RCache";
-
+        private const string CacheName = "59PORClusteredCache"; 
 
         static void Main(string[] args)
         {
+            Console.WriteLine("NCache Bulk Operations Demo");
+
             try
             {
                 _cache = CacheManager.GetCache(CacheName);
-                Events eventHandler = new Events();
-                
-                Console.WriteLine("Successfully connected to the cache.");
-                var product1 = new Product { Id = 211, Name = "Gaming Mouse", Category = "Peripherals" };
-                var product2 = new Product { Id = 212, Name = "Mechanical Keyboard", Category = "Peripherals" };
-                var product3 = new Product { Id = 213, Name = "Momitor", Category = "Screen" };
-
-                var HighPriority = new NamedTagsDictionary();
-                HighPriority.Add("High", 10);
-                var MediumPriority = new NamedTagsDictionary();
-                MediumPriority.Add("Medium", 10);
-                var LowPriority = new NamedTagsDictionary();
-                LowPriority.Add("Low", 10);
-                
+                if (_cache != null)
+                {
+                    // 1. Create and register the event handler
+                    Events eventHandler = new Events();
+                    eventHandler.RegisterCacheNotificationsForAllOperations(_cache);
+                   
 
 
-                // --- Add Product 1 with Tags ---
-                var cacheItem1 = new CacheItem(product1);
-                cacheItem1.NamedTags = HighPriority;
-                _cache.Insert($"product:{product1.Id}", cacheItem1);
+                    Console.WriteLine("--------------------- Part 1: Bulk Insert using a Loop ------------------------------------");
+                    int numberOfProducts = 100;
+                    Console.WriteLine($"Preparing to insert {numberOfProducts} products in bulk...");
 
-                // --- Add Product 2 with Tags ---
-                var cacheItem2 = new CacheItem(product2);
-                cacheItem2.NamedTags = MediumPriority; // Not on sale
-                _cache.Insert($"product:{product2.Id}", cacheItem2);
-                
-                // --- Add Product 2 with Tags ---
-                var cacheItem3 = new CacheItem(product3);
-                cacheItem3.NamedTags = LowPriority; // Not on sale
-                _cache.Insert($"product:{product3.Id}", cacheItem3);
 
-                Console.WriteLine("Added 3 products with tags.");
-                List<string> productKeys = new List<string>
+                    var productItems = new Dictionary<string, CacheItem>();
+                    for (int i = 1; i <= numberOfProducts; i++)
                     {
-                        $"product:{product1.Id}", // "product:101"
-                        $"product:{product2.Id}", // "product:102"
-                        $"product:{product3.Id}"  // "product:103"
-                    };
+                        var product = new Product
+                        {
+                            Id = 200 + i,
+                            Name = $"Bulk Product #{i}",
+                            Price = Math.Round(19.99 + (i * 2.5), 2)
+                        };
+                        string cacheKey = $"product:{product.Id}";
+                        productItems.Add(cacheKey, new CacheItem(product));
+                    }
 
-                var Item = _cache.GetBulk<Product>(productKeys);
-                foreach(var item in Item)
-                {
-                    Console.WriteLine($"  - Key: {item.Key} has following data {item}");
+                    _cache.AddBulk(productItems);
+                    Console.WriteLine($"Bulk insert operation completed for {productItems.Count} items.");
+                    Console.WriteLine(new string('-', 40));
+
+                    Thread.Sleep(10000);
+
+                    Console.WriteLine("-------------------------------- Part 2: Bulk Get using a Loop ---------------------------");
+
+                    Console.WriteLine("Preparing to retrieve all products using GetBulk...");
+                    var productKeysToFetch = new List<string>();
+                    for (int i = 1; i <= numberOfProducts; i++)
+                    {
+                        productKeysToFetch.Add($"product:{200 + i}");
+                    }
+                    IDictionary<string, Product> retrievedProducts = _cache.GetBulk<Product>(productKeysToFetch);
+
+                    Console.WriteLine($"Successfully retrieved {retrievedProducts.Count} products from the cache.");
+
+                    if (retrievedProducts.Count > 0)
+                    {
+                        Console.WriteLine("Retrieved Products:");
+                        foreach (var kvp in retrievedProducts)
+                        {
+                            Console.WriteLine($"  -> Key: {kvp.Key}, Value: {kvp.Value}");
+                        }
+                    }
+
+                    Thread.Sleep(10000);
+
+
+                    Console.WriteLine("-------------------------------- Part 2: Bulk Async remove ---------------------------");
+                    var productKeysToRemove = new List<string>();
+                    for (int i = 1; i <= numberOfProducts; i++)
+                    {
+                        if (i % 2 == 0)
+                            productKeysToRemove.Add($"product:{200 + i}");
+                    }
+                    // Bulk Remove
+                    _cache.RemoveBulk(productKeysToRemove);
+                    Console.WriteLine("Bulk removed products.");
+
+
+                    Console.WriteLine("-------------------------------- Part 2: Bulk Get using a Loop ---------------------------");
+
+                    Console.WriteLine("Preparing to retrieve all products using GetBulk...");
+
+                    retrievedProducts = _cache.GetBulk<Product>(productKeysToFetch);
+
+                    Console.WriteLine($"Successfully retrieved {retrievedProducts.Count} products from the cache.");
+
+                    if (retrievedProducts.Count > 0)
+                    {
+                        Console.WriteLine("Retrieved Products After Removal:");
+                        foreach (var kvp in retrievedProducts)
+                        {
+                            Console.WriteLine($"  -> Key: {kvp.Key}, Value: {kvp.Value}");
+                        }
+                    }
+                    Thread.Sleep(10000);
 
                 }
-                CacheItem cacheItem = _cache.GetCacheItem("product:201");
-              //  cacheItem.NamedTags.Remove("High");
-                Console.WriteLine($"  after removing high priority data");
-                var Item2 = _cache.GetBulk<Product>(productKeys);
-                foreach (var item in Item2)
+                else
                 {
-                    Console.WriteLine($"  - Key: {item.Key} has following data {item}");
-
+                    Console.WriteLine("Failed to connect to cache.");
                 }
-
-                /* var HighPriorityItem = _cache.SearchService.GetKeysByTag(HighPriority);
-                 Console.WriteLine($"\nFound {onSaleItems.Count} item(s) in the {tags[0]} group:");
-                 foreach(var pair in onSaleItems)
-                 {
-                     Console.WriteLine($"  - Key: {pair}");
-                 }*/
+            }
+            catch (OperationFailedException ex)
+            {
+                Console.WriteLine($"NCache Operation Failed: {ex.Message}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"A critical error occurred: {ex.Message}");
+                Console.WriteLine($"Error: {ex.Message}");
             }
             finally
             {
-                // Clean up and close connection
-                //_cache?.Dispose(); 
+               // _cache.Clear();
+                 //_cache?.Dispose();
+                //Console.WriteLine("Cache cleared. Press any key to exit...");
             }
-        }
-        
 
+            Console.ReadKey();
+        }
+    
     }
 }
-
