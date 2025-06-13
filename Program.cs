@@ -11,107 +11,65 @@ namespace NCacheDemoApp
 {
     class Program
     {
-        private static ICache _cache;
+        //private static ICache _cache;
         private const string CacheName = "59PORClusteredCache"; 
 
         static void Main(string[] args)
         {
-            Console.WriteLine("NCache Bulk Operations Demo");
-
             try
-            {
-                _cache = CacheManager.GetCache(CacheName);
-                if (_cache != null)
-                {
-                    // 1. Create and register the event handler
-                    Events eventHandler = new Events();
-                    eventHandler.RegisterCacheNotificationsForAllOperations(_cache);
-                   
+            { 
+                Console.WriteLine("NCache Bulk Operations Demo");
 
 
-                    Console.WriteLine("--------------------- Part 1: Bulk Insert using a Loop ------------------------------------");
-                    int numberOfProducts = 100;
-                    Console.WriteLine($"Preparing to insert {numberOfProducts} products in bulk...");
+                ICache cache = CacheManager.GetCache(CacheName);
+                Console.WriteLine($"Connected to cache");
+                cache.Clear(); 
+
+                var itemLevelEventsDemo = new ItemLevelEvent();
+
+                // --- Step 1: Add an item with a specific notification attached ---
+                Console.WriteLine("\n--- STEP 1: ADDING ITEM WITH NOTIFICATION ---");
+                var product = new Product { Id = 101, Name = "Laptop", Price = 1200 };
+                var product2 = new Product { Id = 102, Name = "GPU", Price = 1200 };
+                var product3 = new Product { Id = 103, Name = "RAM", Price = 1200 };
+                itemLevelEventsDemo.AddItemWithSpecificNotification(cache, product);
+
+                var cacheItem = new CacheItem(product);
+                var cacheItem2 = new CacheItem(product2);
+                var cacheItem3 = new CacheItem(product3);
+
+            
+                cache.Insert($"product:{product2.Id}", cacheItem2);
+                cache.Insert($"product:{product3.Id}", cacheItem3);
+                Console.WriteLine("items inserted WITHOUT a notification.");
+
+                cache.Insert($"product:{product.Id}", cacheItem);
+                // --- Step 2: Update the item to trigger the 'ItemUpdated' event ---
+                Console.WriteLine("\n--- STEP 2: UPDATING THE ITEM TO TRIGGER EVENT ---");
+                Console.WriteLine("Waiting 2 seconds before update...");
+                Thread.Sleep(2000); 
+
+                // Create the updated version of the product
+                var updatedProduct = new Product { Id = 101, Name = "Gaming Laptop", Price = 1499 };
+                cache.Insert($"product:{product.Id}", updatedProduct); 
+                Console.WriteLine($"--> Updated item 'product:{product.Id}' in the cache.");
+
+                // Also update the other item - notice no event will fire for this one.
+                var updatedProduct2 = new Product { Id = 102, Name = "GPU", Price = 11499 };
+                cache.Insert($"product:{product2.Id}", updatedProduct2);
+                Console.WriteLine($"--> Updated item 'product:{product2.Id}' in the cache.");
 
 
-                    var productItems = new Dictionary<string, CacheItem>();
-                    for (int i = 1; i <= numberOfProducts; i++)
-                    {
-                        var product = new Product
-                        {
-                            Id = 200 + i,
-                            Name = $"Bulk Product #{i}",
-                            Price = Math.Round(19.99 + (i * 2.5), 2)
-                        };
-                        string cacheKey = $"product:{product.Id}";
-                        productItems.Add(cacheKey, new CacheItem(product));
-                    }
+                // --- Step 3: Remove the item to trigger the 'ItemRemoved' event ---
+                Console.WriteLine("\n--- STEP 3: REMOVING THE ITEM TO TRIGGER EVENT ---");
+                Console.WriteLine("Waiting 5 seconds before removal...");
+                Thread.Sleep(100); 
 
-                    _cache.AddBulk(productItems);
-                    Console.WriteLine($"Bulk insert operation completed for {productItems.Count} items.");
-                    Console.WriteLine(new string('-', 40));
+                cache.Remove($"product:{product.Id}");
+                Console.WriteLine($"--> Removed item 'product:{product.Id}' from the cache.");
 
-                    Thread.Sleep(10000);
-
-                    Console.WriteLine("-------------------------------- Part 2: Bulk Get using a Loop ---------------------------");
-
-                    Console.WriteLine("Preparing to retrieve all products using GetBulk...");
-                    var productKeysToFetch = new List<string>();
-                    for (int i = 1; i <= numberOfProducts; i++)
-                    {
-                        productKeysToFetch.Add($"product:{200 + i}");
-                    }
-                    IDictionary<string, Product> retrievedProducts = _cache.GetBulk<Product>(productKeysToFetch);
-
-                    Console.WriteLine($"Successfully retrieved {retrievedProducts.Count} products from the cache.");
-
-                    if (retrievedProducts.Count > 0)
-                    {
-                        Console.WriteLine("Retrieved Products:");
-                        foreach (var kvp in retrievedProducts)
-                        {
-                            Console.WriteLine($"  -> Key: {kvp.Key}, Value: {kvp.Value}");
-                        }
-                    }
-
-                    Thread.Sleep(10000);
-
-
-                    Console.WriteLine("-------------------------------- Part 2: Bulk Async remove ---------------------------");
-                    var productKeysToRemove = new List<string>();
-                    for (int i = 1; i <= numberOfProducts; i++)
-                    {
-                        if (i % 2 == 0)
-                            productKeysToRemove.Add($"product:{200 + i}");
-                    }
-                    // Bulk Remove
-                    _cache.RemoveBulk(productKeysToRemove);
-                    Console.WriteLine("Bulk removed products.");
-
-
-                    Console.WriteLine("-------------------------------- Part 2: Bulk Get using a Loop ---------------------------");
-
-                    Console.WriteLine("Preparing to retrieve all products using GetBulk...");
-
-                    retrievedProducts = _cache.GetBulk<Product>(productKeysToFetch);
-
-                    Console.WriteLine($"Successfully retrieved {retrievedProducts.Count} products from the cache.");
-
-                    if (retrievedProducts.Count > 0)
-                    {
-                        Console.WriteLine("Retrieved Products After Removal:");
-                        foreach (var kvp in retrievedProducts)
-                        {
-                            Console.WriteLine($"  -> Key: {kvp.Key}, Value: {kvp.Value}");
-                        }
-                    }
-                    Thread.Sleep(10000);
-
-                }
-                else
-                {
-                    Console.WriteLine("Failed to connect to cache.");
-                }
+                Console.WriteLine("\nDemo finished. Press any key to exit.");
+                Console.ReadKey();
             }
             catch (OperationFailedException ex)
             {
