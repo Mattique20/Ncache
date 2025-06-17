@@ -42,8 +42,6 @@ namespace NcacheDemo
         public void RegisterCacheNotificationsForAllOperations(ICache cache)
         {
             var dataNotificationCallback = new CacheDataNotificationCallback(OnCacheDataModification);
-
-            // CRITICAL CHANGE HERE: Use DataWithMetadata to get the item back in the event argument
             CacheEventDescriptor eventDescriptor = cache.MessagingService.RegisterCacheNotification(
                 dataNotificationCallback,
                 EventType.ItemAdded | EventType.ItemUpdated | EventType.ItemRemoved,
