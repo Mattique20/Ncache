@@ -19,9 +19,12 @@ namespace NCacheDemoApp
             ICache _cache = CacheManager.GetCache(CacheName);
             try
             {
-                ObjectQueryLanguage OQL = new ObjectQueryLanguage();
-                OQL.Run(_cache, CacheName);
-               
+
+                File_Dependency K1 = new File_Dependency();
+                K1.Run(_cache);
+
+
+
             }
             catch (OperationFailedException ex)
             {
@@ -33,9 +36,9 @@ namespace NCacheDemoApp
             }
             finally
             {
-                // _cache.Clear();
-                //_cache?.Dispose();
-                //Console.WriteLine("Cache cleared. Press any key to exit...");
+                _cache.Clear();
+                _cache?.Dispose();
+                Console.WriteLine("Cache cleared. Press any key to exit...");
                 
             }
 
