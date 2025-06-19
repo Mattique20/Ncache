@@ -11,7 +11,7 @@ namespace NCacheDemoApp
 {
     class Program
     {
-        //private static ICache _cache;
+      
         private const string CacheName = "59PORClusteredCache";
         static void Main(string[] args)
         {
@@ -19,10 +19,8 @@ namespace NCacheDemoApp
             ICache _cache = CacheManager.GetCache(CacheName);
             try
             {
-                string topicName = "orderTopic";
-
-                PubSub pub = new PubSub();
-                pub.run(_cache, topicName);
+                ObjectQueryLanguage OQL = new ObjectQueryLanguage();
+                OQL.Run(_cache, CacheName);
                
             }
             catch (OperationFailedException ex)
