@@ -12,19 +12,21 @@ namespace NcacheDemo
     {
         public void Run(ICache _cache)
         {
-            string filepath = ".\\product.csv";
+            string filepath = "D:\\NcacheDemo\\NcacheDemo\\product.csv";
             var Product = new Product { Id = 202, Name = "Mechanical Keyboard", Price = 125.50 };
             CacheItem cacheItem = new CacheItem(Product);
            // _cache.Add($"Product:{Product.Id}", cacheItem);
 
-
-            cacheItem.Dependency = new FileDependency(filepath, DateTime.Now.AddSeconds(1));
+            
+            cacheItem.Dependency = new FileDependency(filepath);
             _cache.Insert($"Product:{Product.Id}", cacheItem);
 
             Console.WriteLine("Dependency added now change smthng in file");
 
             var productKeysToFetch = new List<string>();
             productKeysToFetch.Add("Product:202");
+
+
 
             IDictionary<string, Product> retrievedProducts = _cache.GetBulk<Product>(productKeysToFetch);
             Console.WriteLine($"Successfully retrieved {retrievedProducts.Count} products from the cache.");
@@ -37,10 +39,6 @@ namespace NcacheDemo
                     Console.WriteLine($"  -> Key: {kvp.Key}, Value: {kvp.Value}");
                 }
             }
-
-
-
-
         }
 
     }

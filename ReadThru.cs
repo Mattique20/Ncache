@@ -1,5 +1,4 @@
-﻿using Alachisoft.NCache.Client;
-using Alachisoft.NCache.Runtime.Caching;
+﻿using Alachisoft.NCache.Runtime.Caching;
 using Alachisoft.NCache.Runtime.DatasourceProviders;
 using NcacheDemo.SampleData;
 using System;
@@ -74,7 +73,7 @@ namespace NcacheDemo
 
         public void Dispose()
         {
-
+           
         }
 
         private object LoadFromDataSource(string key)
@@ -114,13 +113,6 @@ namespace NcacheDemo
             return retrievedObject;
         }
 
-        public void Run(ICache _cache)
-        {
 
-            var readThruOptions = new ReadThruOptions();
-            readThruOptions.Mode = ReadMode.ReadThru;
-
-            Product data = _cache.Get<Product>("product; #201", readThruOptions);
-        }
     }
 }
