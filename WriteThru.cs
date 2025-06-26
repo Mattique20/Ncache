@@ -5,152 +5,165 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Data.SqlClient;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
-namespace NcacheDemo
+namespace Providers
 {
-    class WriteThru : IWriteThruProvider
-    {   
-        private SqlConnection _connection;
+    public class WriteThru : IWriteThruProvider
+    {
+        // We only store the connection STRING, not the shared connection object.
+        private string _connectionString;
 
-        // Perform tasks like allocating resources or acquiring connections
+        /// <summary>
+        /// This method is called once when the cache starts. Its only job is to get 
+        /// the connection string and test it to ensure the provider can connect to the DB.
+        /// </summary>
         public void Init(IDictionary parameters, string cacheId)
         {
             try
             {
-                string connString = GetConnectionString(parameters);
-                if (!string.IsNullOrEmpty(connString))
+               
+                var builder = new SqlConnectionStringBuilder();
+                string GetParam(string key)
                 {
-                    _connection = new SqlConnection(connString);
-                    _connection.Open();
+                    foreach (var k in parameters.Keys)
+                    {
+                        if (string.Equals(k.ToString(), key, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return parameters[k] as string;
+                        }
+                    }
+                    return null;
+                }
+
+                builder.DataSource = GetParam("server");
+                builder.InitialCatalog = GetParam("database");
+
+                if (string.IsNullOrEmpty(builder.DataSource) || string.IsNullOrEmpty(builder.InitialCatalog))
+                {
+                    throw new Exception("Required parameters 'server' and 'database' are missing.");
+                }
+
+                string username = GetParam("username");
+                if (string.IsNullOrEmpty(username))
+                {
+                    builder.IntegratedSecurity = true;
+                }
+                else
+                {
+                    builder.UserID = username;
+                    builder.Password = GetParam("password");
+                }
+
+                // Store the connection string for later use.
+                _connectionString = builder.ConnectionString;
+
+                // Test the connection once at startup. If this fails, the cache will not start.
+                using (var tempConn = new SqlConnection(_connectionString))
+                {
+                    tempConn.Open();
                 }
             }
             catch (Exception ex)
             {
-                // Handle exception
+                // This stops the cache from starting if the DB connection is bad and logs the real error.
+                throw new Exception($"[WriteThru] Provider initialization failed. Check connection string and database access. Original Error: {ex.Message}", ex);
             }
         }
 
-        // Perform tasks associated with freeing, releasing, or resetting resources.
+        /// <summary>
+        /// We no longer have a persistent connection to dispose of.
+        /// </summary>
         public void Dispose()
         {
-            if (_connection != null)
-            {
-                _connection.Close();
-            }
+            // Nothing to do here.
         }
 
-        //Responsible for write operations on data source
+        /// <summary>
+        /// This method is called for every write operation. It is now fully self-contained and thread-safe.
+        /// </summary>
         public OperationResult WriteToDataSource(WriteOperation operation)
         {
-            ProviderCacheItem cacheItem = operation.ProviderItem;
-            Product product = cacheItem.GetValue<Product>();
-
-            switch (operation.OperationType)
+            try
             {
-                case WriteOperationType.Add:
-                    // Insert logic for any Add operation
-                    break;
-                case WriteOperationType.Delete:
-                    // Insert logic for any Delete operation
-                    break;
-                case WriteOperationType.Update:
-                    // Insert logic for any Update operation
-                    break;
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    ProductProvider product = operation.ProviderItem?.GetValue<ProductProvider>();
+
+                    if (product == null && operation.OperationType != WriteOperationType.Delete)
+                    {
+                        throw new Exception("Product object for write operation is null.");
+                    }
+
+                    connection.Open();
+
+                    using (var command = connection.CreateCommand())
+                    {
+                        switch (operation.OperationType)
+                        {
+                            case WriteOperationType.Add:
+                                // This block is designed for auto-increment keys.
+                                command.CommandText = "INSERT INTO Products (ProductName, UnitPrice, CategoryID) VALUES (@Name, @Price, @CategoryId); SELECT SCOPE_IDENTITY();";
+                                command.Parameters.AddWithValue("@Name", product.Name);
+                                command.Parameters.AddWithValue("@Price", product.Price);
+                                command.Parameters.AddWithValue("@CategoryId", product.CategoryId);
+
+                                object newId = command.ExecuteNonQuery();
+                                if (newId != null && newId != DBNull.Value)
+                                {
+                                    product.Id = Convert.ToInt32(newId);
+                                    var updatedCacheItem = new CacheItem(product);
+                                    string newKey = $"ProductProvider:{product.Id}";
+
+                                    // This special result tells NCache to update the key and value in the cache.
+                                    var writeResult = new OperationResult(operation, OperationResult.Status.Success, "Updated with DB-generated ID");
+                                   
+                                    return writeResult;
+                                }
+                                else
+                                {
+                                    throw new Exception("Failed to retrieve new ID from database after insert.");
+                                }
+
+                            case WriteOperationType.Update:
+                                // Update logic remains the same.
+                                command.CommandText = "UPDATE Products SET ProductName = @Name, UnitPrice = @Price, CategoryID = @CategoryId WHERE ProductID = @Id";
+                                command.Parameters.AddWithValue("@Name", product.Name);
+                                command.Parameters.AddWithValue("@Price", product.Price);
+                                command.Parameters.AddWithValue("@CategoryId", product.CategoryId);
+                                command.Parameters.AddWithValue("@Id", product.Id);
+                                command.ExecuteNonQuery();
+                                break;
+
+                            case WriteOperationType.Delete:
+                                // Delete logic remains the same.
+                                command.CommandText = "DELETE FROM Products WHERE ProductID = @Id";
+                                command.Parameters.AddWithValue("@Id", Convert.ToInt32(operation.Key.Substring(operation.Key.LastIndexOf(':') + 1)));
+                                command.ExecuteNonQuery();
+                                break;
+                        }
+                    }
+                }
+                return new OperationResult(operation, OperationResult.Status.Success);
             }
-            // Write Thru operation status can be set according to the result.
-            return new OperationResult(operation, OperationResult.Status.Success);
+            catch (Exception ex)
+            {
+                return new OperationResult(operation, OperationResult.Status.Failure, ex);
+            }
         }
 
         public ICollection<OperationResult> WriteToDataSource(ICollection<WriteOperation> operations)
         {
-            var operationResult = new List<OperationResult>();
-            foreach (WriteOperation operation in operations)
+            var operationResults = new List<OperationResult>();
+            foreach (var op in operations)
             {
-                ProviderCacheItem cacheItem = operation.ProviderItem;
-                Product product = cacheItem.GetValue<Product>();
-
-                switch (operation.OperationType)
-                {
-                    case WriteOperationType.Add:
-                        // Insert logic for any Add operation
-                        break;
-                    case WriteOperationType.Delete:
-                        // Insert logic for any Delete operation
-                        break;
-                    case WriteOperationType.Update:
-                        // Insert logic for any Update operation
-                        break;
-                }
-                // Write Thru operation status can be set according to the result
-                operationResult.Add(new OperationResult(operation, OperationResult.Status.Success));
+                operationResults.Add(WriteToDataSource(op));
             }
-            return operationResult;
+            return operationResults;
         }
 
         public ICollection<OperationResult> WriteToDataSource(ICollection<DataTypeWriteOperation> operations)
         {
-            var operationResult = new List<OperationResult>();
-            foreach (DataTypeWriteOperation operation in operations)
-            {
-                var list = new List<Product>();
-                ProviderDataTypeItem<object> cacheItem = operation.ProviderItem;
-                Product product = (Product)cacheItem.Data;
-
-                switch (operation.OperationType)
-                {
-                    case DatastructureOperationType.CreateDataType:
-                        // Insert logic for creating a new List
-                        IList myList = new List<Product>();
-                        myList.Add(product.Id);
-                        break;
-                    case DatastructureOperationType.AddToDataType:
-                        // Insert logic for any Add operation
-                        list.Add(product);
-                        break;
-                    case DatastructureOperationType.DeleteFromDataType:
-                        // Insert logic for any Remove operation
-                        list.Remove(product);
-                        break;
-                    case DatastructureOperationType.UpdateDataType:
-                        // Insert logic for any Update operation
-                        list.Insert(0, product);
-                        break;
-                }
-                // Write Thru operation status can be set according to the result.
-                operationResult.Add(new OperationResult(operation, OperationResult.Status.Success));
-            }
-            return operationResult;
-        }
-
-
-        // Parameters specified in Manager are passed to this method
-        // These parameters make the connection string
-        private string GetConnectionString(IDictionary parameters)
-        {
-            string connectionString = string.Empty;
-            string server = parameters["server"] as string, database = parameters["database"] as string;
-            string userName = parameters["username"] as string, password = parameters["password"] as string;
-            try
-            {
-                connectionString = string.IsNullOrEmpty(server) ? "" : "Server=" + server + ";";
-                connectionString = string.IsNullOrEmpty(database) ? "" : "Database=" + database + ";";
-                connectionString += "User ID=";
-                connectionString += string.IsNullOrEmpty(userName) ? "" : userName;
-                connectionString += ";";
-                connectionString += "Password=";
-                connectionString += string.IsNullOrEmpty(password) ? "" : password;
-                connectionString += ";";
-            }
-            catch (Exception exp)
-            {
-                // Handle exception
-            }
-            return connectionString;
+            return new List<OperationResult>();
         }
     }
-
-
 }

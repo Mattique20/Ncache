@@ -7,8 +7,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-
-namespace NcacheDemo
+//using NcacheDemo;
+namespace Providers
 {
     class Eviction
     {
@@ -48,11 +48,11 @@ namespace NcacheDemo
             var productItems = new Dictionary<string, CacheItem>();
             for (int i = 1; i <= 10000000; i++)
             {
-                var product = new Product
+                var product = new ProductProvider
                 {
                     Id = 200 + i,
                     Name = $"Product #{i}",
-                    Price = Math.Round(19.99 + (i * 2.5), 2)
+                    Price = 19.99m + i
                 };
                 string cacheKey = $"product:{product.Id}";
                 var cacheItem1 = new CacheItem(product);

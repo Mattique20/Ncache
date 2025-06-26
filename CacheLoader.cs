@@ -2,131 +2,237 @@
 using Alachisoft.NCache.Runtime.Caching;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using NcacheDemo;
-using NcacheDemo.SampleData;
-
-namespace NcacheDemo
+using System.Data;
+using System.Data.SqlClient;
+using System.Collections;
+namespace Providers
 {
-    class CacheLoader : ICacheLoader
+    public class CacheLoader : ICacheLoader
     {
+        private SqlConnection _connection;
+        private readonly object _dbLock = new object();
+
+        // Establishes the database connection
         public void Init(IDictionary<string, string> parameters, string cacheName)
         {
-            Console.WriteLine($"CacheLoader for cache '{cacheName}'");
+            try
+            {
+                // This helper method builds the connection string from parameters
+                var builder = new SqlConnectionStringBuilder();
+
+                // Use case-insensitive check for parameter names
+                string GetParam(string key)
+                {
+                    foreach (var k in parameters.Keys)
+                    {
+                        if (string.Equals(k.ToString(), key, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return parameters[k] as string;
+                        }
+                    }
+                    return null;
+                }
+
+                builder.DataSource = GetParam("server");
+                builder.InitialCatalog = GetParam("database");
+                string username = GetParam("username");
+
+                if (string.IsNullOrEmpty(builder.DataSource) || string.IsNullOrEmpty(builder.InitialCatalog))
+                {
+                    throw new Exception("Required parameters 'server' and 'database' are missing.");
+                }
+
+                if (string.IsNullOrEmpty(username))
+                {
+                    builder.IntegratedSecurity = true;
+                }
+                else
+                {
+                    builder.UserID = username;
+                    builder.Password = GetParam("password");
+                }
+
+                string connString = builder.ConnectionString;
+                _connection = new SqlConnection(connString);
+                _connection.Open(); // This is the line that is likely failing.
+            }
+            catch (Exception ex)
+            {
+                // THIS IS THE MOST IMPORTANT PART.
+                // It wraps the real error and throws it, which will stop the cache from starting
+                // and log the real database error (e.g., "Login failed for user 'sa'").
+                throw new Exception($"Provider initialization failed. Please check NCache error logs for details. Original Error: {ex.Message}", ex);
+            }
         }
+
+        public void Dispose()
+        {
+            _connection?.Close();
+            _connection?.Dispose();
+        }
+
+        // *** CORRECTED: This method now returns a Dictionary<string, ProviderCacheItem> ***
         public object LoadDatasetOnStartup(string dataSet)
         {
-            if (string.IsNullOrEmpty(dataSet)) return null;
-
-            Console.WriteLine($"LOADER: Loading dataset '{dataSet}' on startup...");
-            var itemsToLoad = new List<ProviderCacheItem>();
-
-            switch (dataSet.ToLower())
+            if (string.IsNullOrEmpty(dataSet) || dataSet.ToLower() != "products")
             {
-                case "products":
-                    var allProducts = MockDB.Products;
-                    foreach (var product in allProducts)
-                    {
-                        var item = new ProviderCacheItem(product);
-                        item.ResyncOptions = new ResyncOptions(true, dataSet);
-                        itemsToLoad.Add(item);
-                    }
-                    break;
-
-                case "suppliers":
-                    var allSuppliers = MockDB.Suppliers;
-                    foreach (var supplier in allSuppliers)
-                    {
-                        var item = new ProviderCacheItem(supplier);
-                        item.ResyncOptions = new ResyncOptions(true, dataSet);
-                        itemsToLoad.Add(item);
-                    }
-                    break;
+                return null;
             }
 
-            Console.WriteLine($"LOADER: Returning {itemsToLoad.Count} items for NCache to load.");
-            return itemsToLoad.ToArray();
+            // *** CHANGE THIS: Use Hashtable instead of Dictionary ***
+            var itemsToLoad = new Hashtable();
+            string query = "SELECT ProductID, ProductName, UnitPrice, CategoryID FROM Products";
+
+            try
+            {
+                // The lock and DB logic remains exactly the same
+                lock (_dbLock)
+                {
+                    using (var command = new SqlCommand(query, _connection))
+                    using (var reader = command.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            var product = new ProductProvider
+                            {
+                                Id = Convert.ToInt32(reader["ProductID"]),
+                                Name = reader["ProductName"].ToString(),
+                                Price = Convert.ToDecimal(reader["UnitPrice"]),
+                                CategoryId = Convert.ToInt32(reader["CategoryID"]),
+                            };
+
+                            string cacheKey = $"ProductProvider:{product.Id}";
+                            var item = new ProviderCacheItem(product);
+                            item.ResyncOptions = new ResyncOptions(true, dataSet);
+
+                            // Add to the Hashtable. The syntax is the same.
+                            itemsToLoad[cacheKey] = item;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // This is still good to have for debugging
+                Console.WriteLine($"CacheLoader LoadDatasetOnStartup failed: {ex.Message}");
+            }
+
+            // Return the Hashtable
+            return itemsToLoad;
         }
+
+        // *** CORRECTED: This method now returns a Dictionary<string, ProviderCacheItem> ***
+        public object RefreshDataset(string dataSet, object userContext)
+        {
+            if (string.IsNullOrEmpty(dataSet) || dataSet.ToLower() != "products" || !(userContext is DateTime))
+            {
+                return null;
+            }
+
+            
+            var itemsToRefresh = new Dictionary<string, ProviderCacheItem>();
+            DateTime lastCheckTime = (DateTime)userContext;
+            /*
+            string query = "SELECT ProductID, ProductName, UnitPrice, CategoryID FROM Products WHERE LastModify > @LastCheckTime";
+
+            try
+            {
+                lock (_dbLock)
+                {
+                    using (var command = new SqlCommand(query, _connection))
+                    {
+                        command.Parameters.Add("@LastCheckTime", SqlDbType.DateTime).Value = lastCheckTime;
+                        using (var reader = command.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                var product = new ProductProvider
+                                {
+                                    Id = Convert.ToInt32(reader["ProductID"]),
+                                    Name = reader["ProductName"].ToString(),
+                                    Price = Convert.ToDecimal(reader["UnitPrice"]),
+                                    CategoryId = Convert.ToInt32(reader["CategoryID"]),
+                                   
+                                };
+
+                                string cacheKey = $"ProductProvider:{product.Id}";
+
+                                var item = new ProviderCacheItem(product);
+                                item.ResyncOptions = new ResyncOptions(true, dataSet);
+
+                                itemsToRefresh[cacheKey] = item;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"CacheLoader RefreshDataset failed: {ex.Message}");
+            }
+            */
+            return itemsToRefresh; // Return the dictionary
+        }
+
+
         public IDictionary<string, RefreshPreference> GetDatasetsToRefresh(IDictionary<string, object> userContexts)
         {
             var datasetsToRefresh = new Dictionary<string, RefreshPreference>();
-
-            foreach (var dataSet in userContexts.Keys)
+            /*
+            foreach (var context in userContexts)
             {
-                DateTime? lastCheckTime = userContexts[dataSet] as DateTime?;
+                string dataSet = context.Key;
+                if (dataSet.ToLower() != "products" || !(context.Value is DateTime)) continue;
 
-                switch (dataSet.ToLower())
+                DateTime lastCheckTime = (DateTime)context.Value;
+                string query = "SELECT 1 FROM Products WHERE LastModify > @LastCheckTime";
+
+                try
                 {
-                    case "products":
-                        if (MockDB.Products.Any(p => p.LastModify > lastCheckTime))
+                    lock (_dbLock)
+                    {
+                        using (var command = new SqlCommand(query, _connection))
                         {
-                            Console.WriteLine("REFRESHER: Product dataset has changed. Scheduling for refresh.");
-                            datasetsToRefresh.Add(dataSet, RefreshPreference.RefreshNow);
+                            command.Parameters.Add("@LastCheckTime", SqlDbType.DateTime).Value = lastCheckTime;
+                            if (command.ExecuteScalar() != null) // More efficient check
+                            {
+                                datasetsToRefresh.Add(dataSet, RefreshPreference.RefreshNow);
+                            }
                         }
-                        break;
-
-                    case "suppliers":
-                        if (MockDB.Suppliers.Any(s => s.LastModify > lastCheckTime))
-                        {
-                            Console.WriteLine("REFRESHER: Supplier dataset has changed. Scheduling for refresh.");
-                            datasetsToRefresh.Add(dataSet, RefreshPreference.RefreshNow);
-                        }
-                        break;
+                    }
                 }
-            }
-
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"CacheLoader GetDatasetsToRefresh failed: {ex.Message}");
+                }
+            }*/
             return datasetsToRefresh;
         }
 
-        public object RefreshDataset(string dataSet, object userContext)
-        {
-            if (string.IsNullOrEmpty(dataSet)) return null;
-
-            Console.WriteLine($"REFRESHER: Fetching updated items for dataset '{dataSet}'...");
-            var itemsToRefresh = new List<ProviderCacheItem>();
-            DateTime? lastCheckTime = userContext as DateTime?;
-
-            switch (dataSet.ToLower())
-            {
-                case "products":
-                    var updatedProducts = MockDB.Products.Where(p => p.LastModify > lastCheckTime);
-                    foreach (var product in updatedProducts)
-                    {
-                        var item = new ProviderCacheItem(product);
-                        // Re-apply ReSyncOptions so it gets checked again in the future.
-                        item.ResyncOptions = new ResyncOptions(true, dataSet);
-                        itemsToRefresh.Add(item);
-                    }
-                    break;
-
-                case "suppliers":
-                    var updatedSuppliers = MockDB.Suppliers.Where(s => s.LastModify > lastCheckTime);
-                    foreach (var supplier in updatedSuppliers)
-                    {
-                        var item = new ProviderCacheItem(supplier);
-                        item.ResyncOptions = new ResyncOptions(true, dataSet);
-                        itemsToRefresh.Add(item);
-                    }
-                    break;
-            }
-
-            Console.WriteLine($"REFRESHER: Returning {itemsToRefresh.Count} updated items for NCache to refresh.");
-            return itemsToRefresh.ToArray();
-        }
-
-
-        // The user context provider method is used to pass state (like the current time)
-        // between the Refresher calls.
         public object GetUserContext(string dataset)
         {
             return DateTime.UtcNow;
         }
 
-        public void Dispose()
+        private string GetConnectionString(IDictionary<string, string> parameters)
         {
-            // Nothing to dispose of in this mock implementation.
+            if (parameters == null) return string.Empty;
+            var builder = new SqlConnectionStringBuilder
+            {
+                DataSource = parameters.ContainsKey("server") ? parameters["server"] : null,
+                InitialCatalog = parameters.ContainsKey("database") ? parameters["database"] : null,
+            };
+            string username = parameters.ContainsKey("username") ? parameters["username"] : null;
+            if (string.IsNullOrEmpty(username))
+            {
+                builder.IntegratedSecurity = true;
+            }
+            else
+            {
+                builder.UserID = username;
+                builder.Password = parameters.ContainsKey("password") ? parameters["password"] : null;
+            }
+            return builder.ConnectionString;
         }
     }
 }

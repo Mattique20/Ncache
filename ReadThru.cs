@@ -1,118 +1,184 @@
 ﻿using Alachisoft.NCache.Runtime.Caching;
 using Alachisoft.NCache.Runtime.DatasourceProviders;
-using NcacheDemo.SampleData;
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
+using System.Data;
+using System.Data.SqlClient;
 using System.Text;
-using System.Threading.Tasks;
 
-namespace NcacheDemo
+namespace Providers
 {
-    class ReadThru : IReadThruProvider
+    public class ReadThru : IReadThruProvider
     {
+        private SqlConnection _connection;
+        private readonly object _dbLock = new object();
 
         public void Init(IDictionary parameters, string cacheId)
         {
-            Console.WriteLine($"CacheLoader for cache '{cacheId}'");
-        }
-
-        public ProviderCacheItem LoadFromSource(string key)
-        {
-            object value = LoadFromDataSource(key);
-            var cacheItem = new ProviderCacheItem(value);
-            return cacheItem;
-        }
-
-        public IDictionary<string, ProviderCacheItem> LoadFromSource(ICollection<string> keys)
-        {
-            var dictionary = new Dictionary<string, ProviderCacheItem>();
             try
             {
-                foreach (string key in keys)
+                string connString = GetConnectionString(parameters);
+                if (!string.IsNullOrEmpty(connString))
                 {
-                    // LoadFromDataSource loads data from data source
-                    dictionary.Add(key, new ProviderCacheItem(LoadFromDataSource(key)));
+                    _connection = new SqlConnection(connString);
+                    _connection.Open();
                 }
-                return dictionary;
             }
-            catch (Exception exp)
+            catch (Exception ex)
             {
-                // Handle exception
+                Console.WriteLine($"Read-Thru Provider Init Failed: {ex.Message}");
             }
-            return dictionary;
-        }
-        public ProviderDataTypeItem<IEnumerable> LoadDataTypeFromSource(string key, DistributedDataType dataType)
-        {
-            IEnumerable value = null;
-            ProviderDataTypeItem<IEnumerable> dataTypeItem = null;
-
-            switch (dataType)
-            {
-                case DistributedDataType.List:
-                    value = new List<object>()
-                    {
-                        LoadFromDataSource(key)
-                    };
-                    dataTypeItem = new ProviderDataTypeItem<IEnumerable>(value);
-                    break;
-                case DistributedDataType.Dictionary:
-                    value = new Dictionary<string, object>()
-                    {
-                        { key ,  LoadFromDataSource(key) }
-                    };
-                    dataTypeItem = new ProviderDataTypeItem<IEnumerable>(value);
-                    break;
-                case DistributedDataType.Counter:
-                    dataTypeItem = new ProviderDataTypeItem<IEnumerable>(1000);
-                    break;
-            }
-            return dataTypeItem;
         }
 
         public void Dispose()
         {
-           
+            _connection?.Close();
+            _connection?.Dispose();
         }
 
+        // *** UPDATED to fetch new fields ***
         private object LoadFromDataSource(string key)
         {
-            object retrievedObject = null;
-            if (string.IsNullOrEmpty(key)) return null;
+            if (!TryParseProductKey(key, out int productId)) return null;
 
-            Console.WriteLine($"LOADER: Loading dataset '{key}' on startup...");
-            var itemsToLoad = new List<ProviderCacheItem>();
+            ProductProvider product = null;
+            string query = "SELECT ProductID, ProductName, UnitPrice, CategoryID FROM Products WHERE ProductID = @Id";
 
-            switch (key.ToLower())
+            // Best practice to lock even for a single read to ensure thread safety
+            // in the context of the provider which can be called by multiple threads.
+            lock (_dbLock)
             {
-                case "products":
-                    var allProducts = MockDB.Products;
-                    foreach (var product in allProducts)
+                try
+                {
+                    // Use a new command object for each call
+                    using (var command = new SqlCommand(query, _connection))
                     {
-                        var item = new ProviderCacheItem(product);
-                        item.ResyncOptions = new ResyncOptions(true, key);
-                        itemsToLoad.Add(item);
+                        command.Parameters.Add("@Id", SqlDbType.Int).Value = productId;
+                        using (var reader = command.ExecuteReader())
+                        {
+                            if (reader.Read())
+                            {
+                                product = new ProductProvider
+                                {
+                                    Id = Convert.ToInt32(reader["ProductID"]),
+                                    Name = reader["ProductName"].ToString(),
+                                    Price = Convert.ToDecimal(reader["UnitPrice"]),
+                                    CategoryId = Convert.ToInt32(reader["CategoryID"])
+                                };
+                            }
+                        }
                     }
-                    break;
-
-                case "suppliers":
-                    var allSuppliers = MockDB.Suppliers;
-                    foreach (var supplier in allSuppliers)
-                    {
-                        var item = new ProviderCacheItem(supplier);
-                        item.ResyncOptions = new ResyncOptions(true, key);
-                        itemsToLoad.Add(item);
-                    }
-                    break;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Read-Thru LoadFromDataSource Failed for key '{key}': {ex.Message}");
+                }
             }
 
-            Console.WriteLine($"LOADER: Returning {itemsToLoad.Count} items for NCache to load.");
-            return itemsToLoad.ToArray();
-
-            return retrievedObject;
+            return product;
+        }
+        // This part uses LoadFromDataSource, so no changes needed here
+        public ProviderCacheItem LoadFromSource(string key)
+        {
+            object value = LoadFromDataSource(key);
+            return value != null ? new ProviderCacheItem(value) : null;
         }
 
+        // The rest of the class (bulk load, helpers) is below for completeness
+        public IDictionary<string, ProviderCacheItem> LoadFromSource(ICollection<string> keys)
+        {
+            var result = new Dictionary<string, ProviderCacheItem>();
+            var productIds = new List<int>();
+            var keyMap = new Dictionary<int, string>();
 
+            foreach (var key in keys)
+            {
+                if (TryParseProductKey(key, out int id))
+                {
+                    productIds.Add(id);
+                    if (!keyMap.ContainsKey(id)) keyMap.Add(id, key);
+                }
+            }
+            if (productIds.Count == 0) return result;
+
+            // *** UPDATED QUERY for bulk load ***
+            var queryBuilder = new StringBuilder("SELECT ProductID, ProductName, UnitPrice, CategoryID FROM Products WHERE ProductID IN (");
+            // ... (rest of the bulk load logic is the same, but it will read the new object correctly below)
+            var sqlParams = new List<SqlParameter>();
+            for (int i = 0; i < productIds.Count; i++)
+            {
+                string paramName = $"@Id{i}";
+                queryBuilder.Append(paramName + (i < productIds.Count - 1 ? "," : ""));
+                sqlParams.Add(new SqlParameter(paramName, productIds[i]));
+            }
+            queryBuilder.Append(")");
+
+            try
+            {
+                lock (_dbLock)
+                {
+                    using (var command = new SqlCommand(queryBuilder.ToString(), _connection))
+                    {
+                        command.Parameters.AddRange(sqlParams.ToArray());
+                        using (var reader = command.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                var product = new ProductProvider
+                                {
+                                    // *** UPDATED MAPPING for bulk load ***
+                                    Id = Convert.ToInt32(reader["ProductID"]),
+                                    Name = reader["ProductName"].ToString(),
+                                    Price = Convert.ToDecimal(reader["UnitPrice"]),
+                                    CategoryId = Convert.ToInt32(reader["CategoryID"])
+                                };
+                                string originalKey = keyMap[product.Id];
+                                result[originalKey] = new ProviderCacheItem(product);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Read-Thru (Bulk) operation failed: {ex.Message}");
+            }
+            return result;
+        }
+       
+        private string GetConnectionString(IDictionary parameters)
+        {
+            if (parameters == null) return string.Empty;
+            var builder = new SqlConnectionStringBuilder
+            {
+                DataSource = parameters["server"] as string,
+                InitialCatalog = parameters["database"] as string
+            };
+            string username = parameters["username"] as string;
+            if (string.IsNullOrEmpty(username))
+            {
+                builder.IntegratedSecurity = true;
+            }
+            else
+            {
+                builder.UserID = username;
+                builder.Password = parameters["password"] as string;
+            }
+            return builder.ConnectionString;
+        }
+
+        private bool TryParseProductKey(string key, out int id)
+        {
+            id = 0;
+            if (string.IsNullOrEmpty(key)) return false;
+            string[] parts = key.Split(':');
+            return parts.Length == 2 && int.TryParse(parts[1], out id);
+        }
+
+        public ProviderDataTypeItem<IEnumerable> LoadDataTypeFromSource(string key, DistributedDataType dataType)
+        {
+            return null; // Not implemented for this demo
+        }
     }
 }
