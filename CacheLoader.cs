@@ -4,8 +4,8 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SqlClient;
-using System.Collections;
-namespace Providers
+using Providers;
+namespace NcacheDemo.Providers
 {
     public class CacheLoader : ICacheLoader
     {
@@ -17,51 +17,17 @@ namespace Providers
         {
             try
             {
-                // This helper method builds the connection string from parameters
-                var builder = new SqlConnectionStringBuilder();
-
-                // Use case-insensitive check for parameter names
-                string GetParam(string key)
+                string connString = GetConnectionString(parameters);
+                if (!string.IsNullOrEmpty(connString))
                 {
-                    foreach (var k in parameters.Keys)
-                    {
-                        if (string.Equals(k.ToString(), key, StringComparison.OrdinalIgnoreCase))
-                        {
-                            return parameters[k] as string;
-                        }
-                    }
-                    return null;
+                    _connection = new SqlConnection(connString);
+                    _connection.Open();
+                    Console.WriteLine($"CacheLoader for cache '{cacheName}': Database connection established.");
                 }
-
-                builder.DataSource = GetParam("server");
-                builder.InitialCatalog = GetParam("database");
-                string username = GetParam("username");
-
-                if (string.IsNullOrEmpty(builder.DataSource) || string.IsNullOrEmpty(builder.InitialCatalog))
-                {
-                    throw new Exception("Required parameters 'server' and 'database' are missing.");
-                }
-
-                if (string.IsNullOrEmpty(username))
-                {
-                    builder.IntegratedSecurity = true;
-                }
-                else
-                {
-                    builder.UserID = username;
-                    builder.Password = GetParam("password");
-                }
-
-                string connString = builder.ConnectionString;
-                _connection = new SqlConnection(connString);
-                _connection.Open(); // This is the line that is likely failing.
             }
             catch (Exception ex)
             {
-                // THIS IS THE MOST IMPORTANT PART.
-                // It wraps the real error and throws it, which will stop the cache from starting
-                // and log the real database error (e.g., "Login failed for user 'sa'").
-                throw new Exception($"Provider initialization failed. Please check NCache error logs for details. Original Error: {ex.Message}", ex);
+                Console.WriteLine($"CacheLoader Init Failed: {ex.Message}");
             }
         }
 
@@ -79,13 +45,12 @@ namespace Providers
                 return null;
             }
 
-            // *** CHANGE THIS: Use Hashtable instead of Dictionary ***
-            var itemsToLoad = new Hashtable();
+            // The method should return a dictionary where the key is the cache key.
+            var itemsToLoad = new Dictionary<string, ProviderCacheItem>();
             string query = "SELECT ProductID, ProductName, UnitPrice, CategoryID FROM Products";
 
             try
             {
-                // The lock and DB logic remains exactly the same
                 lock (_dbLock)
                 {
                     using (var command = new SqlCommand(query, _connection))
@@ -99,13 +64,17 @@ namespace Providers
                                 Name = reader["ProductName"].ToString(),
                                 Price = Convert.ToDecimal(reader["UnitPrice"]),
                                 CategoryId = Convert.ToInt32(reader["CategoryID"]),
+                                
                             };
 
+                            // *** The KEY is now the key in the dictionary ***
                             string cacheKey = $"ProductProvider:{product.Id}";
+
                             var item = new ProviderCacheItem(product);
+                            // Set ResyncOptions so NCache checks this dataset for updates
                             item.ResyncOptions = new ResyncOptions(true, dataSet);
 
-                            // Add to the Hashtable. The syntax is the same.
+                            // Add the key-value pair to the dictionary
                             itemsToLoad[cacheKey] = item;
                         }
                     }
@@ -113,12 +82,10 @@ namespace Providers
             }
             catch (Exception ex)
             {
-                // This is still good to have for debugging
                 Console.WriteLine($"CacheLoader LoadDatasetOnStartup failed: {ex.Message}");
             }
 
-            // Return the Hashtable
-            return itemsToLoad;
+            return itemsToLoad; // Return the dictionary
         }
 
         // *** CORRECTED: This method now returns a Dictionary<string, ProviderCacheItem> ***

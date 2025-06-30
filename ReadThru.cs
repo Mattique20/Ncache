@@ -47,8 +47,7 @@ namespace Providers
 
             // Best practice to lock even for a single read to ensure thread safety
             // in the context of the provider which can be called by multiple threads.
-            lock (_dbLock)
-            {
+            
                 try
                 {
                     // Use a new command object for each call
@@ -74,7 +73,7 @@ namespace Providers
                 {
                     Console.WriteLine($"Read-Thru LoadFromDataSource Failed for key '{key}': {ex.Message}");
                 }
-            }
+            
 
             return product;
         }
@@ -116,8 +115,7 @@ namespace Providers
 
             try
             {
-                lock (_dbLock)
-                {
+                
                     using (var command = new SqlCommand(queryBuilder.ToString(), _connection))
                     {
                         command.Parameters.AddRange(sqlParams.ToArray());
@@ -138,7 +136,7 @@ namespace Providers
                             }
                         }
                     }
-                }
+                
             }
             catch (Exception ex)
             {
